@@ -165,7 +165,7 @@ def _span_match(field_value: str, options: list) -> tuple:
     matches = []
     for opt in options:
         regex = template_regex(opt.default, opt.input)
-        for m in re.finditer(regex, field_value):
+        for m in re.finditer(regex, field_value, re.IGNORECASE):
             if not overlaps(m.start(), m.end()):
                 claimed.append((m.start(), m.end()))
                 matches.append((opt.id, m.group(0), m.start()))

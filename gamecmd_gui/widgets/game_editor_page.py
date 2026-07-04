@@ -12,11 +12,14 @@ named modes) render a spin button or dropdown instead of freeform text,
 built from the option's NumberField/ChoiceField metadata -- see
 options_catalog.py.
 
-Gamescope is special-cased: its own flags always have to sit between the
-literal "gamescope" token and a closing "--", so they're grouped
-(group="gamescope_block") and only take effect while "Wrap in gamescope"
-is checked; the command_builder assembles them into one block rather
-than placing them loose in the prefix chain.
+Any option can declare `requires=<other option id>` (see
+options_catalog.py) -- its checkbox is disabled, and forced back off if
+it was checked, whenever the option it requires isn't itself checked.
+This covers both gamescope's own flags (which only mean anything while
+"Wrap in gamescope" is checked -- the command_builder additionally
+assembles them into one "gamescope <flags> --" block rather than
+placing them loose in the prefix chain) and things like a DLSS render
+preset requiring its *_OVERRIDE flag to be on.
 
 Existing profiles are matched against the catalog on open: any option
 found in the profile's env_vars/prefix/suffix gets its checkbox
@@ -39,8 +42,8 @@ from ..command_builder import (SelectedOption, build_fields, detect_matches,  # 
                                 template_regex)
 from ..gtk_util import esc  # noqa: E402
 from ..models import Profile, slugify  # noqa: E402
-from ..options_catalog import (CATALOG, GAMESCOPE_BLOCK_GROUP, GAMESCOPE_CATEGORY_ID,  # noqa: E402
-                                GAMESCOPE_MASTER_ID, ChoiceField, find_option)
+from ..options_catalog import (CATALOG, GAMESCOPE_CATEGORY_ID, GAMESCOPE_MASTER_ID,  # noqa: E402
+                                ChoiceField, find_option)
 
 _KEY_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
@@ -57,12 +60,27 @@ class _OptionRow:
 
 
 def _parse_initial(opt, initial_value):
-    """Extract {field: value} from a matched value string using the option's template."""
+    """
+    Extract {field: value} from a matched value string using the option's
+    template. Matching is case-insensitive (DXVK-NVAPI and friends document
+    their setting values as case-insensitive) -- ChoiceField values are
+    additionally lowercased so they line up with the ids registered on the
+    dropdown (all lowercase in options_catalog.py), while NumberField digits
+    are unaffected by case.
+    """
     if not initial_value or not opt.input:
         return {}
     regex = template_regex(opt.default, opt.input)
-    m = re.match(regex, initial_value)
-    return m.groupdict() if m else {}
+    m = re.match(regex, initial_value, re.IGNORECASE)
+    if not m:
+        return {}
+    result = m.groupdict()
+    field_map = {f.name: f for f in opt.input}
+    for name, value in list(result.items()):
+        field = field_map.get(name)
+        if field is not None and hasattr(field, "choices"):
+            result[name] = value.lower()
+    return result
 
 
 class GameEditorPage(Adw.NavigationPage):
@@ -92,7 +110,6 @@ class GameEditorPage(Adw.NavigationPage):
 
         self.option_rows = {}
         self.prefix_order = list(initial_prefix_order)
-        self._gamescope_block_rows = []
 
         toolbar_view = Adw.ToolbarView()
         self.set_child(toolbar_view)
@@ -144,17 +161,27 @@ class GameEditorPage(Adw.NavigationPage):
                 expander.add_row(row)
                 option_row = _OptionRow(opt, check, get_value, catalog_index, widgets)
                 self.option_rows[opt.id] = option_row
-                if opt.group == GAMESCOPE_BLOCK_GROUP:
-                    self._gamescope_block_rows.append(option_row)
                 catalog_index += 1
             if category.id == GAMESCOPE_CATEGORY_ID:
                 self.gamescope_extra_row = Adw.EntryRow(title="Extra gamescope flags (advanced)")
                 self.gamescope_extra_row.set_text(gamescope_extra)
                 self.gamescope_extra_row.connect("changed", lambda _e: self._update_preview())
                 expander.add_row(self.gamescope_extra_row)
+                self.gamescope_extra_row.set_sensitive(
+                    bool(self.option_rows[GAMESCOPE_MASTER_ID].check.get_active()))
             outer.append(group_widget)
 
-        self._sync_gamescope_block_sensitivity()
+        # Build the requires-> dependents reverse index, then apply initial
+        # sensitivity for every option that depends on another one (covers
+        # both the gamescope block and things like a DLSS preset requiring
+        # its override flag).
+        self._dependents = {}
+        for option_id, row in self.option_rows.items():
+            if row.option.requires:
+                self._dependents.setdefault(row.option.requires, []).append(option_id)
+        for option_id, row in self.option_rows.items():
+            if row.option.requires:
+                self._apply_row_sensitivity(option_id)
 
         # --- Prefix ordering --------------------------------------------
         self.prefix_order_group = Adw.PreferencesGroup(
@@ -286,21 +313,13 @@ class GameEditorPage(Adw.NavigationPage):
         entry.set_tooltip_text(entry.get_text())
         self._update_preview()
 
-    # -- prefix ordering / gamescope gating -----------------------------
+    # -- prefix ordering / requires-> dependency gating ------------------
 
     def _on_option_toggled(self, check, opt, widgets):
-        active = check.get_active()
-        if opt.group == GAMESCOPE_BLOCK_GROUP:
-            master_row = self.option_rows.get(GAMESCOPE_MASTER_ID)
-            master_active = bool(master_row and master_row.check.get_active())
-            for w in widgets:
-                w.set_sensitive(active and master_active)
-        else:
-            for w in widgets:
-                w.set_sensitive(active)
+        self._apply_row_sensitivity(opt.id)
 
         if opt.target == "prefix" and not opt.group:
-            if active:
+            if check.get_active():
                 if opt.id not in self.prefix_order:
                     self.prefix_order.append(opt.id)
             else:
@@ -308,21 +327,35 @@ class GameEditorPage(Adw.NavigationPage):
                     self.prefix_order.remove(opt.id)
             self._rebuild_prefix_order_box()
 
-        if opt.id == GAMESCOPE_MASTER_ID:
-            self._sync_gamescope_block_sensitivity()
+        # Anything that requires this option needs its sensitivity (and,
+        # if the requirement just went away, its checked state) re-evaluated.
+        for dependent_id in self._dependents.get(opt.id, ()):
+            self._apply_row_sensitivity(dependent_id)
+
+        if opt.id == GAMESCOPE_MASTER_ID and self.gamescope_extra_row is not None:
+            self.gamescope_extra_row.set_sensitive(check.get_active())
 
         self._update_preview()
 
-    def _sync_gamescope_block_sensitivity(self):
-        master_row = self.option_rows.get(GAMESCOPE_MASTER_ID)
-        master_active = bool(master_row and master_row.check.get_active())
-        for option_row in self._gamescope_block_rows:
-            option_row.check.set_sensitive(master_active)
-            row_checked = option_row.check.get_active()
-            for w in option_row.widgets:
-                w.set_sensitive(master_active and row_checked)
-        if self.gamescope_extra_row is not None:
-            self.gamescope_extra_row.set_sensitive(master_active)
+    def _apply_row_sensitivity(self, option_id):
+        """
+        Enforces `requires`: a dependent option's checkbox is disabled (and,
+        if it was checked, forced back off) whenever the option it requires
+        isn't itself checked -- so an inert value can never silently end up
+        in the built command just because its checkbox still shows "on".
+        """
+        row = self.option_rows[option_id]
+        opt = row.option
+        gate = True
+        if opt.requires:
+            required_row = self.option_rows.get(opt.requires)
+            gate = bool(required_row and required_row.check.get_active())
+            row.check.set_sensitive(gate)
+            if not gate and row.check.get_active():
+                row.check.set_active(False)  # re-enters here via "toggled"; gate stays False, so it stops
+        active = row.check.get_active()
+        for w in row.widgets:
+            w.set_sensitive(active and gate)
 
     def _rebuild_prefix_order_box(self):
         while True:

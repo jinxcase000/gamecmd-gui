@@ -34,6 +34,13 @@ currently only "gamescope_block" (see the gamescope category below):
 gamescope's own flags have to sit between the literal "gamescope" token
 and a closing "--", never just loose in the prefix chain.
 
+`requires` names another option's id that must be checked for this one
+to take effect (e.g. a DLSS render-preset override only does anything
+if its corresponding *_OVERRIDE=on flag is also set). The Game Editor
+disables (and force-unchecks) a dependent option whenever its
+requirement isn't met, so a stale/inert value can never silently end
+up in the built command.
+
 NOTE ON ACCURACY: values here reflect widely-documented, real flags/env
 vars for Proton/DXVK/Wine/gamescope/MangoHud and common engines. A few
 (marked with `warning=`) are new, driver-version-dependent, or need
@@ -71,6 +78,7 @@ class OptionDef:
     warning: str = ""
     input: tuple = ()   # tuple[NumberField, ...] or (ChoiceField,) -- () means plain text/flag
     group: str = ""      # "" = standalone; "gamescope_block" = part of the gamescope ... -- span
+    requires: str = ""    # id of another option that must be checked for this one to apply
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,20 @@ CATALOG: list[CategoryDef] = [
                       "PROTON_FORCE_LARGE_ADDRESS_AWARE=1",
                       "Lets a 32-bit game address more than 2GB of RAM, if the exe supports "
                       "it. Helps some older titles that run out of memory."),
+            OptionDef("proton_enable_wayland", "Use native Wayland backend", "env",
+                      "PROTON_ENABLE_WAYLAND=1",
+                      "Runs Proton on Wayland natively instead of through XWayland -- lower "
+                      "latency and smoother frames, and the way to get HDR without gamescope. "
+                      "Not feature-complete yet: can break the Steam overlay.",
+                      warning="Experimental. If the mouse misbehaves or windows go borderless, also try 'Disable window decorations'; if Steam Input acts up, also try 'Disable Steam Input'."),
+            OptionDef("proton_no_wm_decoration", "Disable window decorations (Wayland)", "env",
+                      "PROTON_NO_WM_DECORATION=1",
+                      "Troubleshooting companion for native Wayland: fixes erratic mouse "
+                      "behavior/borderless window glitches some games hit with PROTON_ENABLE_WAYLAND."),
+            OptionDef("proton_no_steaminput", "Disable Steam Input (Wayland)", "env",
+                      "PROTON_NO_STEAMINPUT=1",
+                      "Troubleshooting companion for native Wayland: fixes Steam Input acting "
+                      "up with a controller under PROTON_ENABLE_WAYLAND."),
         ),
     ),
 
@@ -155,6 +177,12 @@ CATALOG: list[CategoryDef] = [
                           ("none", "none"), ("error", "error"), ("warn", "warn"),
                           ("info", "info"), ("debug", "debug"),
                       ), "none"),)),
+            OptionDef("radv_perftest_gpl", "RADV graphics pipeline library", "env",
+                      "RADV_PERFTEST=gpl",
+                      "Enables RADV's graphics pipeline library path, which can reduce shader "
+                      "compile stutter on AMD GPUs. Many recent Mesa versions already enable "
+                      "this by default, in which case setting it explicitly is a harmless no-op.",
+                      warning="May already be the default on modern Mesa -- check `mesa-git`/your distro's Mesa version before assuming it's needed."),
         ),
     ),
 
@@ -173,7 +201,74 @@ CATALOG: list[CategoryDef] = [
                       "want dxvk-nvapi to initialize."),
             OptionDef("ngx_updater", "Enable NGX (DLSS DLL) auto-updates", "env",
                       "PROTON_ENABLE_NGX_UPDATER=1",
-                      "Lets Proton keep the NVIDIA NGX/DLSS DLLs up to date automatically."),
+                      "The official Valve/Proton 9+ way to keep the NVIDIA NGX/DLSS DLLs up to "
+                      "date automatically. Pair with the SR/RR/FG override options below to "
+                      "also force a specific render preset once the DLL is current."),
+            OptionDef("proton_dlss_upgrade", "Auto-download newest DLSS DLL (GE-Proton/CachyOS)", "env",
+                      "PROTON_DLSS_UPGRADE=1",
+                      "Downloads and swaps in a newer nvngx_dlss DLL, and forces the latest DRS "
+                      "preset -- a single-variable shortcut some community Proton builds "
+                      "provide. Leave the value as '1' for latest, or edit it to a specific "
+                      "version string (e.g. 310.2) to pin one. This is specific to GE-Proton "
+                      "and Proton-CachyOS, not vanilla Valve Proton -- and don't combine it "
+                      "with a separate dlss-swapper run, they'll conflict.",
+                      warning="GE-Proton / Proton-CachyOS specific, not standard Proton. Don't combine with dlss-swapper."),
+            OptionDef("proton_dlss_indicator", "Show DLSS status indicator (GE-Proton)", "env",
+                      "PROTON_DLSS_INDICATOR=1",
+                      "Draws an in-game indicator confirming which DLSS preset/version is "
+                      "actually active -- handy for verifying the override options below "
+                      "really took effect. GE-Proton specific.",
+                      warning="GE-Proton specific, may not exist on other Proton builds."),
+            OptionDef("nvapi_sr_override", "Enable Super Resolution preset override", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSS_SR_OVERRIDE=on",
+                      "Must be on for the Super Resolution preset below to have any effect."),
+            OptionDef("nvapi_sr_preset", "Super Resolution render preset", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSS_SR_OVERRIDE_RENDER_PRESET_SELECTION={preset}",
+                      "Forces a specific DLSS Super Resolution model preset regardless of what "
+                      "the game requests. 'Latest' tracks whatever NVIDIA currently ships as "
+                      "newest (read as 'recommended' from DLSS 4.5 onward).",
+                      requires="nvapi_sr_override",
+                      input=(ChoiceField("preset", tuple(
+                          [("render_preset_latest", "Latest / Recommended")] +
+                          [(f"render_preset_{c.lower()}", f"Preset {c}") for c in "ABCDEFGHIJKLMNO"]
+                      ), "render_preset_latest"),)),
+            OptionDef("nvapi_rr_override", "Enable Ray Reconstruction preset override", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSS_RR_OVERRIDE=on",
+                      "Must be on for the Ray Reconstruction preset below to have any effect."),
+            OptionDef("nvapi_rr_preset", "Ray Reconstruction render preset", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSS_RR_OVERRIDE_RENDER_PRESET_SELECTION={preset}",
+                      "Forces a specific DLSS Ray Reconstruction model preset.",
+                      requires="nvapi_rr_override",
+                      input=(ChoiceField("preset", tuple(
+                          [("render_preset_latest", "Latest / Recommended")] +
+                          [(f"render_preset_{c.lower()}", f"Preset {c}") for c in "ABCDEFGHIJKLMNO"]
+                      ), "render_preset_latest"),)),
+            OptionDef("nvapi_fg_override", "Enable Frame Generation preset override", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSS_FG_OVERRIDE=on",
+                      "Must be on for the Frame Generation preset below to have any effect."),
+            OptionDef("nvapi_fg_preset", "Frame Generation render preset", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSS_FG_OVERRIDE_RENDER_PRESET_SELECTION={preset}",
+                      "Forces a specific DLSS Frame Generation model preset. FG has a wider "
+                      "preset range (A-Z) than SR/RR.",
+                      requires="nvapi_fg_override",
+                      input=(ChoiceField("preset", tuple(
+                          [("render_preset_latest", "Latest / Recommended"),
+                           ("render_preset_default", "Default")] +
+                          [(f"render_preset_{c.lower()}", f"Preset {c}") for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
+                      ), "render_preset_latest"),)),
+            OptionDef("nvapi_dlssg_mode", "Frame Generation mode", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSSG_MODE={mode}",
+                      "Controls whether/how DLSS Frame Generation runs, independent of the "
+                      "preset override above.",
+                      input=(ChoiceField("mode", (
+                          ("on", "On"), ("off", "Off"), ("auto", "Auto"),
+                          ("dynamic", "Dynamic"), ("disabled", "Disabled"),
+                      ), "on"),)),
+            OptionDef("nvapi_dlssg_multi_frame_count", "Frame Generation multiplier", "env",
+                      "DXVK_NVAPI_DRS_NGX_DLSSG_MULTI_FRAME_COUNT={n}",
+                      "How many generated frames per rendered frame: 0 = app-controlled/off, "
+                      "1 = 2x, 2 = 3x, 3 = 4x, 4 = 5x, 5 = 6x.",
+                      input=(NumberField("n", "Multiplier (0-5)", 0, 5, 1, 1),)),
             OptionDef("gl_shader_cache", "Enable NVIDIA shader disk cache", "env",
                       "__GL_SHADER_DISK_CACHE=1",
                       "Caches compiled shaders to disk between runs on the proprietary NVIDIA "
@@ -236,31 +331,32 @@ CATALOG: list[CategoryDef] = [
                           NumberField("oh", "Output H", 480, 4320, 10, 1440),
                           NumberField("rw", "Render W", 640, 7680, 10, 1920),
                           NumberField("rh", "Render H", 480, 4320, 10, 1080),
-                      ), group=GAMESCOPE_BLOCK_GROUP),
+                      ), group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_filter", "Upscale filter", "prefix",
                       "-F {filter}",
                       "Which upscaler gamescope uses to go from render resolution to output "
                       "resolution.",
                       input=(ChoiceField("filter", (
                           ("fsr", "FSR 1.0"), ("nis", "NVIDIA Image Scaling"),
-                      ), "fsr"),), group=GAMESCOPE_BLOCK_GROUP),
+                      ), "fsr"),), group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_sharpness", "FSR sharpness", "prefix",
                       "--fsr-sharpness {n}",
                       "0 = maximum sharpening, 20 = minimum. Only applies with the FSR filter.",
                       input=(NumberField("n", "Sharpness", 0, 20, 1, 4),),
-                      group=GAMESCOPE_BLOCK_GROUP),
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_fullscreen", "Force fullscreen", "prefix",
                       "-f",
-                      "Runs gamescope's window fullscreen.", group=GAMESCOPE_BLOCK_GROUP),
+                      "Runs gamescope's window fullscreen.",
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_limiter", "Frame rate limit", "prefix",
                       "-r {fps}",
                       "Caps the frame rate gamescope will present at.",
                       input=(NumberField("fps", "FPS", 30, 240, 5, 60),),
-                      group=GAMESCOPE_BLOCK_GROUP),
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_hdr", "Enable HDR output", "prefix",
                       "--hdr-enabled",
                       "Passes through HDR to a gamescope session that supports it.",
-                      group=GAMESCOPE_BLOCK_GROUP),
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_wsi", "Enable gamescope's Vulkan WSI layer", "env",
                       "ENABLE_GAMESCOPE_WSI=1",
                       "Lets Vulkan games talk to gamescope's own WSI layer directly for "
@@ -310,13 +406,14 @@ CATALOG: list[CategoryDef] = [
                       "Alternative way to request GameMode without wrapping the command in "
                       "gamemoderun -- some launch scripts/wrappers key off this env var "
                       "instead. Use one or the other, not both."),
-            OptionDef("game_performance", "Bazzite-style performance profile wrapper", "prefix",
+            OptionDef("game_performance", "game-performance profile wrapper", "prefix",
                       "game-performance",
-                      "Wraps the launch with a 'game-performance' script (as shipped on Bazzite "
-                      "and similar distros) that switches to a performance power profile for "
-                      "the session and restores it afterward. Only useful if that script exists "
-                      "on your system.",
-                      warning="Only present on Bazzite/ChimeraOS-derived distros or if you've installed it yourself."),
+                      "Wraps the launch with a 'game-performance' script (shipped on Bazzite "
+                      "and CachyOS via cachyos-settings) that switches to a performance power "
+                      "profile via powerprofilesctl for the session, disables the screen saver, "
+                      "and restores everything afterward. Only useful if that script exists on "
+                      "your system, and CachyOS notes it isn't worth it on older CPUs.",
+                      warning="Only present on Bazzite/CachyOS or if you've installed it yourself; skip on older CPUs per CachyOS's own guidance."),
             OptionDef("prime_run", "NVIDIA PRIME render offload", "prefix",
                       "prime-run",
                       "For hybrid Optimus laptops: runs the game on the discrete NVIDIA GPU "
@@ -329,6 +426,18 @@ CATALOG: list[CategoryDef] = [
                       "OBS_VKCAPTURE=1",
                       "Lets OBS Studio (with obs-vkcapture) capture this game directly via "
                       "Vulkan/GL hooks instead of a slower screen/window capture."),
+            OptionDef("mangohud_env", "Enable MangoHud (env var)", "env",
+                      "MANGOHUD=1",
+                      "Alternative to the mangohud prefix wrapper above -- enables the overlay "
+                      "via env var instead of wrapping the command. Useful when you can't "
+                      "easily prepend a wrapper (e.g. setting env vars directly in a Proton "
+                      "user_settings.py). Use one or the other, not both."),
+            OptionDef("force_zink", "Force Zink (OpenGL over Vulkan)", "env",
+                      "MESA_LOADER_DRIVER_OVERRIDE=zink GALLIUM_DRIVER=zink __GLX_VENDOR_LIBRARY_NAME=mesa",
+                      "Routes OpenGL through Zink's Vulkan translation instead of a native GL "
+                      "driver. Occasionally fixes or speeds up specific titles with poor native "
+                      "GL support; rarely a universal win, so treat as a per-game experiment.",
+                      warning="Distro-provided as the 'zink-run' script on CachyOS; a plain env var here for portability."),
         ),
     ),
 
@@ -366,6 +475,73 @@ CATALOG: list[CategoryDef] = [
             OptionDef("wine_large_address_aware", "Large address aware", "env",
                       "WINE_LARGE_ADDRESS_AWARE=1",
                       "Standalone-Wine equivalent of Proton's large-address-aware override."),
+        ),
+    ),
+
+    CategoryDef(
+        id="vkd3d",
+        title="VKD3D-Proton (Direct3D 12)",
+        subtitle="Feature toggles for the D3D12-to-Vulkan translation layer",
+        options=(
+            OptionDef("vkd3d_config_dxr", "Enable DXR ray tracing passthrough", "env",
+                      "VKD3D_CONFIG=dxr",
+                      "Lets DX12 titles that use DirectX Raytracing (DXR) run their raytracing "
+                      "path through vkd3d-proton's Vulkan ray tracing translation, on GPUs/"
+                      "drivers that support it."),
+        ),
+    ),
+
+    CategoryDef(
+        id="debugging",
+        title="Debugging & Logging",
+        subtitle="Diagnostic env vars for troubleshooting a game that won't start or misbehaves",
+        options=(
+            OptionDef("dxvk_nvapi_log_level", "DXVK-NVAPI logging", "env",
+                      "DXVK_NVAPI_LOG_LEVEL={level}",
+                      "'info' prints what DXVK-NVAPI is doing; 'trace' additionally logs every "
+                      "entry point call (very verbose, noticeable performance hit). Anything "
+                      "else is treated as no logging.",
+                      input=(ChoiceField("level", (("info", "info"), ("trace", "trace")),
+                                          "info"),)),
+            OptionDef("vkd3d_debug", "VKD3D-Proton logging", "env",
+                      "VKD3D_DEBUG={level}",
+                      "Log verbosity for vkd3d-proton itself. Defaults to 'fixme' when unset.",
+                      input=(ChoiceField("level", (
+                          ("none", "none"), ("err", "err"), ("info", "info"),
+                          ("fixme", "fixme"), ("warn", "warn"), ("trace", "trace"),
+                      ), "warn"),)),
+            OptionDef("vkd3d_shader_debug", "VKD3D shader compiler logging", "env",
+                      "VKD3D_SHADER_DEBUG={level}",
+                      "Same levels as VKD3D-Proton logging above, but for the shader compiler "
+                      "specifically.",
+                      input=(ChoiceField("level", (
+                          ("none", "none"), ("err", "err"), ("info", "info"),
+                          ("fixme", "fixme"), ("warn", "warn"), ("trace", "trace"),
+                      ), "none"),)),
+            OptionDef("winedebug_verbose", "Verbose Wine debug channels", "env",
+                      "WINEDEBUG=+timestamp,+pid,+tid,+seh,+unwind,+threadname,+debugstr,+loaddll,+mscoree",
+                      "Turns on a broad set of Wine debug channels (timestamps, thread/process "
+                      "IDs, exception/unwind handling, DLL loads, .NET bootstrap) -- useful "
+                      "when tracking down a crash-on-launch. Edit the channel list freely; "
+                      "prefix a channel with '+' to enable or '-' to silence it."),
+            OptionDef("wine_mono_trace", "Wine-Mono (.NET) exception trace filter", "env",
+                      "WINE_MONO_TRACE=E:System.NotImplementedException",
+                      "Wine-Mono is Wine's built-in .NET replacement, used by some game "
+                      "launchers/anti-cheat stubs. This filters which exceptions get traced -- "
+                      "edit the class name to catch a different exception type."),
+            OptionDef("mono_log_level", "Mono runtime log level", "env",
+                      "MONO_LOG_LEVEL={level}",
+                      "Log verbosity for the Mono runtime itself (distinct from the Wine-Mono "
+                      "trace filter above).",
+                      input=(ChoiceField("level", (
+                          ("error", "error"), ("critical", "critical"), ("warning", "warning"),
+                          ("message", "message"), ("info", "info"), ("debug", "debug"),
+                      ), "info"),)),
+            OptionDef("gst_debug_no_color", "Disable GStreamer log colors", "env",
+                      "GST_DEBUG_NO_COLOR=1",
+                      "Strips ANSI color codes from GStreamer's debug output (used by some "
+                      "engines for in-game video/movie playback) -- makes logs readable when "
+                      "redirected to a file."),
         ),
     ),
 
