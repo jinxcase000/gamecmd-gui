@@ -10,14 +10,24 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
+from .gtk_util import MONOSPACE_CSS  # noqa: E402
 from .models import GamesFile  # noqa: E402
 from .widgets.game_editor_page import GameEditorPage  # noqa: E402
 from .widgets.games_list_page import GamesListPage  # noqa: E402
 from .widgets.import_steam_dialog import ImportSteamDialog  # noqa: E402
 
 APP_ID = "io.github.jinxcase000.gamecmd-gui"
+
+
+def _install_css():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(MONOSPACE_CSS)
+    Gtk.StyleContext.add_provider_for_display(
+        Gdk.Display.get_default(), provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
 
 
 class GamecmdGuiWindow(Adw.ApplicationWindow):
@@ -59,6 +69,7 @@ class GamecmdGuiApp(Adw.Application):
 
     def do_activate(self):
         if self.window is None:
+            _install_css()
             self.window = GamecmdGuiWindow(self)
         self.window.present()
 

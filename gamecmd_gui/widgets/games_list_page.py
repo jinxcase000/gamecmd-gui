@@ -12,6 +12,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GObject, Gtk  # noqa: E402
 
 from ..command_builder import steam_launch_option_line  # noqa: E402
+from ..gtk_util import esc  # noqa: E402
 
 
 def _summarize(profile) -> str:
@@ -102,7 +103,7 @@ class GamesListPage(Adw.NavigationPage):
             self.listbox.remove(row)
 
         for profile in profiles:
-            row = Adw.ActionRow(title=profile.key, subtitle=_summarize(profile))
+            row = Adw.ActionRow(title=esc(profile.key), subtitle=esc(_summarize(profile)))
             row.set_activatable(True)
             row.connect("activated", self._on_row_activated, profile.key)
 
@@ -148,11 +149,11 @@ class GamesListPage(Adw.NavigationPage):
         line = steam_launch_option_line(key)
         clipboard = Gdk.Display.get_default().get_clipboard()
         clipboard.set(line)
-        self.toast_overlay.add_toast(Adw.Toast(title=f"Copied: {line}", timeout=3))
+        self.toast_overlay.add_toast(Adw.Toast(title=esc(f"Copied: {line}"), timeout=3))
 
     def _on_delete_clicked(self, _button, key):
         dialog = Adw.AlertDialog(
-            heading=f"Delete “{key}”?",
+            heading=esc(f"Delete “{key}”?"),
             body="This removes the profile from games.yaml. This can't be undone.",
         )
         dialog.add_response("cancel", "Cancel")
@@ -168,4 +169,4 @@ class GamesListPage(Adw.NavigationPage):
             self.window.games_file.delete_profile(key)
             self.window.games_file.save()
             self.refresh()
-            self.toast_overlay.add_toast(Adw.Toast(title=f"Deleted “{key}”", timeout=3))
+            self.toast_overlay.add_toast(Adw.Toast(title=esc(f"Deleted “{key}”"), timeout=3))

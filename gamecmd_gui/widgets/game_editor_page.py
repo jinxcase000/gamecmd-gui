@@ -7,12 +7,13 @@ tokens are nested wrappers, leftmost = outermost), free-form "advanced"
 fields for anything not in the catalog, and a live preview of exactly
 what gamecmd will run.
 
-Existing profiles are edited non-destructively: whatever env_vars /
-prefix / suffix a profile already has is loaded verbatim into the
-"Custom / Advanced" fields (never silently reverse-engineered into
-checkbox guesses), so nothing you already tuned by hand can be lost or
-misinterpreted. The checklists are there to layer additional, well-known
-options on top.
+Existing profiles are matched against the catalog on open: any option
+whose value is found in the profile's env_vars/prefix/suffix gets its
+checkbox pre-checked with the *actual* value found (see
+command_builder.detect_matches for exactly how conservative that
+matching is). Whatever isn't recognized -- custom flags, edited
+multi-token values, anything catalog doesn't cover -- lands in
+"Custom / Advanced" verbatim, so nothing is ever lost or misread.
 """
 
 import re
@@ -23,8 +24,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gtk  # noqa: E402
 
-from ..command_builder import (SelectedOption, build_fields, render_preview,  # noqa: E402
-                                steam_launch_option_line)
+from ..command_builder import (SelectedOption, build_fields, detect_matches,  # noqa: E402
+                                render_preview, steam_launch_option_line)
+from ..gtk_util import esc  # noqa: E402
 from ..models import Profile, slugify  # noqa: E402
 from ..options_catalog import CATALOG, find_option  # noqa: E402
 
@@ -44,14 +46,29 @@ class _OptionRow:
 class GameEditorPage(Adw.NavigationPage):
     def __init__(self, window, profile_key):
         self.is_new = profile_key is None
-        super().__init__(title=profile_key or "New Game")
+        super().__init__(title=esc(profile_key or "New Game"))
         self.window = window
         self.original_key = profile_key
 
         existing = window.games_file.get_profile(profile_key) if profile_key else None
 
+        # Reverse-match the existing profile against the catalog so known
+        # options light up pre-checked with their real values.
+        if existing:
+            env_matches, env_leftover = detect_matches(existing.env_vars, "env", CATALOG)
+            prefix_matches, prefix_leftover = detect_matches(existing.prefix, "prefix", CATALOG)
+            suffix_matches, suffix_leftover = detect_matches(existing.suffix, "suffix", CATALOG)
+        else:
+            env_matches, prefix_matches, suffix_matches = [], [], []
+            env_leftover = prefix_leftover = suffix_leftover = ""
+
+        matched_values = {oid: val for (oid, val, _idx) in
+                           env_matches + prefix_matches + suffix_matches}
+        initial_prefix_order = [oid for (oid, _val, _idx)
+                                 in sorted(prefix_matches, key=lambda t: t[2])]
+
         self.option_rows = {}
-        self.prefix_order = []
+        self.prefix_order = list(initial_prefix_order)
 
         toolbar_view = Adw.ToolbarView()
         self.set_child(toolbar_view)
@@ -80,8 +97,8 @@ class GameEditorPage(Adw.NavigationPage):
         # --- Profile identity -----------------------------------------
         identity_group = Adw.PreferencesGroup(
             title="Profile",
-            description="This key is what you'll type in Steam's launch options: "
-                         "gamecmd <key> %command%",
+            description=esc("This key is what you'll type in Steam's launch options: "
+                             "gamecmd <key> %command%"),
         )
         self.key_row = Adw.EntryRow(title="Profile key")
         self.key_row.set_text(profile_key or "")
@@ -93,10 +110,12 @@ class GameEditorPage(Adw.NavigationPage):
         catalog_index = 0
         for category in CATALOG:
             group = Adw.PreferencesGroup()
-            expander = Adw.ExpanderRow(title=category.title, subtitle=category.subtitle)
+            expander = Adw.ExpanderRow(title=esc(category.title), subtitle=esc(category.subtitle))
             group.add(expander)
             for opt in category.options:
-                row, check, entry = self._build_option_row(opt)
+                initial_value = matched_values.get(opt.id)
+                row, check, entry = self._build_option_row(
+                    opt, initial_value=initial_value, checked=opt.id in matched_values)
                 expander.add_row(row)
                 self.option_rows[opt.id] = _OptionRow(opt, check, entry, catalog_index)
                 catalog_index += 1
@@ -105,28 +124,27 @@ class GameEditorPage(Adw.NavigationPage):
         # --- Prefix ordering --------------------------------------------
         self.prefix_order_group = Adw.PreferencesGroup(
             title="Prefix order",
-            description="Prefix commands wrap each other left-to-right (leftmost runs "
-                         "outermost). Reorder the ones you've enabled above.",
+            description=esc("Prefix commands wrap each other left-to-right (leftmost runs "
+                             "outermost). Reorder the ones you've enabled above."),
         )
         self.prefix_order_listbox = Gtk.ListBox(css_classes=["boxed-list"],
                                                  selection_mode=Gtk.SelectionMode.NONE)
         self.prefix_order_group.add(self.prefix_order_listbox)
         outer.append(self.prefix_order_group)
+        self._rebuild_prefix_order_box()
 
         # --- Advanced / custom -------------------------------------------
         advanced_group = Adw.PreferencesGroup(
             title="Custom / Advanced",
-            description="Anything already in this profile, or anything not covered by "
-                         "the checklists above -- edited as raw text and appended after "
-                         "the checked options.",
+            description=esc("Anything not recognized from the checklists above -- edited "
+                             "as raw text and appended after the checked options."),
         )
         self.custom_env_row = Adw.EntryRow(title="Extra env_vars")
         self.custom_prefix_row = Adw.EntryRow(title="Extra prefix")
         self.custom_suffix_row = Adw.EntryRow(title="Extra suffix")
-        if existing:
-            self.custom_env_row.set_text(existing.env_vars)
-            self.custom_prefix_row.set_text(existing.prefix)
-            self.custom_suffix_row.set_text(existing.suffix)
+        self.custom_env_row.set_text(env_leftover)
+        self.custom_prefix_row.set_text(prefix_leftover)
+        self.custom_suffix_row.set_text(suffix_leftover)
         for row in (self.custom_env_row, self.custom_prefix_row, self.custom_suffix_row):
             row.connect("changed", lambda _e: self._update_preview())
             advanced_group.add(row)
@@ -136,7 +154,7 @@ class GameEditorPage(Adw.NavigationPage):
         preview_group = Adw.PreferencesGroup(title="Live preview")
 
         self.steam_line_row = Adw.ActionRow(title="Steam launch options")
-        self.steam_line_label = Gtk.Label(css_classes=["monospace", "dim-label"],
+        self.steam_line_label = Gtk.Label(css_classes=["gamecmd-mono", "dim-label"],
                                            selectable=True, xalign=0)
         self.steam_line_row.add_suffix(self.steam_line_label)
         copy_launch_btn = Gtk.Button(icon_name="edit-copy-symbolic",
@@ -149,8 +167,10 @@ class GameEditorPage(Adw.NavigationPage):
         preview_frame = Gtk.Frame(margin_top=6)
         preview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
                                margin_top=10, margin_bottom=10, margin_start=10, margin_end=10)
-        self.preview_label = Gtk.Label(css_classes=["monospace"], selectable=True,
-                                        wrap=True, xalign=0, justify=Gtk.Justification.LEFT)
+        self.preview_label = Gtk.Label(css_classes=["gamecmd-mono"], selectable=True,
+                                        wrap=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                        max_width_chars=1, xalign=0,
+                                        justify=Gtk.Justification.LEFT)
         preview_box.append(self.preview_label)
         preview_frame.set_child(preview_box)
         preview_group.add(preview_frame)
@@ -161,15 +181,17 @@ class GameEditorPage(Adw.NavigationPage):
 
     # -- row construction --------------------------------------------------
 
-    def _build_option_row(self, opt):
-        row = Adw.ActionRow(title=opt.label, subtitle=opt.description)
+    def _build_option_row(self, opt, initial_value=None, checked=False):
+        row = Adw.ActionRow(title=esc(opt.label), subtitle=esc(opt.description))
 
-        check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+        check = Gtk.CheckButton(valign=Gtk.Align.CENTER, active=checked)
         row.add_prefix(check)
         row.set_activatable_widget(check)
 
-        entry = Gtk.Entry(text=opt.default, valign=Gtk.Align.CENTER, sensitive=False,
-                           width_chars=28, hexpand=False)
+        value = initial_value if initial_value is not None else opt.default
+        entry = Gtk.Entry(text=value, valign=Gtk.Align.CENTER, sensitive=checked,
+                           width_chars=12, max_width_chars=40, hexpand=False,
+                           css_classes=["gamecmd-mono"], tooltip_text=value)
         row.add_suffix(entry)
 
         if opt.warning:
@@ -179,9 +201,13 @@ class GameEditorPage(Adw.NavigationPage):
             row.add_suffix(warn_icon)
 
         check.connect("toggled", self._on_option_toggled, opt, entry)
-        entry.connect("changed", lambda _e: self._update_preview())
+        entry.connect("changed", self._on_entry_changed)
 
         return row, check, entry
+
+    def _on_entry_changed(self, entry):
+        entry.set_tooltip_text(entry.get_text())
+        self._update_preview()
 
     # -- prefix ordering -----------------------------------------------
 
@@ -209,7 +235,7 @@ class GameEditorPage(Adw.NavigationPage):
             list_row = Gtk.ListBoxRow(activatable=False)
             hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
                             margin_top=6, margin_bottom=6, margin_start=10, margin_end=10)
-            hbox.append(Gtk.Label(label=opt.label, hexpand=True, xalign=0))
+            hbox.append(Gtk.Label(label=esc(opt.label), use_markup=True, hexpand=True, xalign=0))
             up_btn = Gtk.Button(icon_name="go-up-symbolic", valign=Gtk.Align.CENTER)
             up_btn.add_css_class("flat")
             up_btn.connect("clicked", self._move_prefix, opt_id, -1)

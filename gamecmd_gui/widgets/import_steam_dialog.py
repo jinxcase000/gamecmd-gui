@@ -13,6 +13,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
+from ..gtk_util import esc  # noqa: E402
 from ..models import Profile, slugify  # noqa: E402
 from ..steam import scan_installed_games  # noqa: E402
 
@@ -120,7 +121,7 @@ class ImportSteamDialog(Adw.Window):
             return
 
         for game in new_games:
-            row = Adw.ActionRow(title=game.name, subtitle=f"App ID {game.appid}")
+            row = Adw.ActionRow(title=esc(game.name), subtitle=esc(f"App ID {game.appid}"))
             check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
             row.add_prefix(check)
             row.set_activatable_widget(check)
