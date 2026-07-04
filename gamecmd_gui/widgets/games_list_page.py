@@ -56,12 +56,12 @@ class GamesListPage(Adw.NavigationPage):
         scroller = Gtk.ScrolledWindow(vexpand=True)
         self.toast_overlay.set_child(scroller)
 
-        clamp = Adw.Clamp(maximum_size=760, tightening_threshold=560)
-        scroller.set_child(clamp)
-
+        # Same reasoning as the Game Editor page: no Adw.Clamp, so this stretches
+        # with the window instead of being capped at a fixed width. Margins give
+        # the padding.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
-                       margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
-        clamp.set_child(box)
+                       margin_top=24, margin_bottom=24, margin_start=24, margin_end=24)
+        scroller.set_child(box)
 
         self.status_page = Adw.StatusPage(
             icon_name="applications-games-symbolic",

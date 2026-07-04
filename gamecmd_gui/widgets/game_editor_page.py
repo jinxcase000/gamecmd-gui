@@ -128,12 +128,14 @@ class GameEditorPage(Adw.NavigationPage):
         scroller = Gtk.ScrolledWindow(vexpand=True)
         self.toast_overlay.set_child(scroller)
 
-        clamp = Adw.Clamp(maximum_size=760, tightening_threshold=560)
-        scroller.set_child(clamp)
-
+        # No Adw.Clamp here on purpose: a Clamp's maximum_size is a hard cap that
+        # never grows past it no matter how wide the window gets -- exactly the
+        # "locked to one size" behavior we don't want. Margins on the outer box
+        # give the padding instead, and the box (allocated the ScrolledWindow's
+        # full viewport width) stretches with the window.
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
-                         margin_top=24, margin_bottom=32, margin_start=12, margin_end=12)
-        clamp.set_child(outer)
+                         margin_top=24, margin_bottom=32, margin_start=24, margin_end=24)
+        scroller.set_child(outer)
 
         # --- Profile identity -----------------------------------------
         identity_group = Adw.PreferencesGroup(
@@ -266,7 +268,7 @@ class GameEditorPage(Adw.NavigationPage):
         if not opt.input:
             value = initial_value if initial_value is not None else opt.default
             entry = Gtk.Entry(text=value, valign=Gtk.Align.CENTER, sensitive=checked,
-                               width_chars=12, max_width_chars=40, hexpand=False,
+                               width_chars=28, max_width_chars=90, hexpand=False,
                                css_classes=["gamecmd-mono"], tooltip_text=value)
             entry.connect("changed", self._on_entry_changed)
             row.add_suffix(entry)
@@ -292,7 +294,7 @@ class GameEditorPage(Adw.NavigationPage):
             parsed = _parse_initial(opt, initial_value)
             start_text = parsed.get(field.name, field.default)
             entry = Gtk.Entry(text=start_text, valign=Gtk.Align.CENTER, sensitive=checked,
-                               width_chars=12, max_width_chars=40, hexpand=False,
+                               width_chars=28, max_width_chars=90, hexpand=False,
                                css_classes=["gamecmd-mono"], tooltip_text=start_text)
             entry.connect("changed", self._on_entry_changed)
             row.add_suffix(entry)
