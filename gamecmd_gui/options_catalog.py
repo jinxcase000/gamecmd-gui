@@ -360,6 +360,66 @@ CATALOG: list[CategoryDef] = [
                       "--hdr-enabled",
                       "Passes through HDR to a gamescope session that supports it.",
                       group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_scaler", "Scaling mode", "prefix",
+                      "-S {method}",
+                      "How gamescope fits the render resolution into the output resolution -- "
+                      "separate from (and combinable with) the upscale filter above, which "
+                      "controls the algorithm rather than the fit behavior.",
+                      input=(ChoiceField("method", (
+                          ("auto", "Auto"), ("integer", "Integer"), ("fit", "Fit"),
+                          ("fill", "Fill"), ("stretch", "Stretch"),
+                      ), "auto"),), group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_borderless", "Borderless window", "prefix",
+                      "-b",
+                      "Starts gamescope's window borderless instead of with decorations.",
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_output_display", "Preferred output display", "prefix",
+                      "-O DP-1",
+                      "Pins gamescope to a specific display connector on a multi-monitor "
+                      "setup -- edit the value to your connector's name (check `xrandr` or "
+                      "`wlr-randr` for the exact name, e.g. DP-1, HDMI-A-1). Note: if you "
+                      "edit this and reopen the profile later, it'll show up under 'Extra "
+                      "gamescope flags' instead of pre-checked here -- it still works "
+                      "exactly the same either way, this box just won't re-detect a "
+                      "customized value.",
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_adaptive_sync", "Adaptive sync (VRR)", "prefix",
+                      "--adaptive-sync",
+                      "Enables variable refresh rate (FreeSync/G-Sync) output, on a display "
+                      "and driver combination that supports it.",
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_steam", "Steam integration mode", "prefix",
+                      "-e",
+                      "Enables gamescope's Steam integration (overlay, input focus handoff, "
+                      "etc.) -- the same flag Steam itself passes when it launches gamescope "
+                      "for a Deck/Big Picture session.",
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_force_grab_cursor", "Force relative mouse mode", "prefix",
+                      "--force-grab-cursor",
+                      "Always uses relative mouse mode instead of gamescope switching "
+                      "between relative and absolute -- can help games/setups where the "
+                      "cursor misbehaves on focus changes.",
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_reshade_effect", "ReShade effect file", "prefix",
+                      "--reshade-effect ~/.local/share/gamescope/reshade/Shaders/example.fx",
+                      "Loads a ReShade shader (CRT shader, film grain, HDR debug histogram, "
+                      "etc.) applied on top of the final composited image. Effects are "
+                      "loaded from ~/.local/share/gamescope/reshade/Shaders/ or "
+                      "/usr/share/gamescope/reshade/Shaders/ -- edit the path to match your "
+                      "effect file. Adds some latency since it runs on the general gfx/"
+                      "compute queue rather than the async compute path. Note: like the "
+                      "output display option above, an edited path re-detects into 'Extra "
+                      "gamescope flags' rather than pre-checking this box on reopen -- still "
+                      "fully functional, just shown differently.",
+                      group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
+            OptionDef("gamescope_reshade_technique_idx", "ReShade technique index", "prefix",
+                      "--reshade-technique-idx {idx}",
+                      "Which technique (by index) inside the loaded ReShade effect file to "
+                      "use, for effect files that define more than one. Requires the ReShade "
+                      "effect file option above to be set.",
+                      requires="gamescope_reshade_effect",
+                      input=(NumberField("idx", "Index", 0, 50, 1, 0),),
+                      group=GAMESCOPE_BLOCK_GROUP),
             OptionDef("gamescope_wsi", "Enable gamescope's Vulkan WSI layer", "env",
                       "ENABLE_GAMESCOPE_WSI=1",
                       "Lets Vulkan games talk to gamescope's own WSI layer directly for "
