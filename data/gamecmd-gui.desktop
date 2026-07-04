@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=gamecmd GUI
+Comment=Build gamecmd Steam launch-option profiles from checklists
+Exec=gamecmd-gui
+Icon=applications-games
+Terminal=false
+Categories=Game;Settings;
