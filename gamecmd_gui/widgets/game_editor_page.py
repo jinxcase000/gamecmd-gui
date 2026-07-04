@@ -7,13 +7,23 @@ tokens are nested wrappers, leftmost = outermost), free-form "advanced"
 fields for anything not in the catalog, and a live preview of exactly
 what gamecmd will run.
 
+Options with a real parameter (frame rate, resolution, a fixed set of
+named modes) render a spin button or dropdown instead of freeform text,
+built from the option's NumberField/ChoiceField metadata -- see
+options_catalog.py.
+
+Gamescope is special-cased: its own flags always have to sit between the
+literal "gamescope" token and a closing "--", so they're grouped
+(group="gamescope_block") and only take effect while "Wrap in gamescope"
+is checked; the command_builder assembles them into one block rather
+than placing them loose in the prefix chain.
+
 Existing profiles are matched against the catalog on open: any option
-whose value is found in the profile's env_vars/prefix/suffix gets its
-checkbox pre-checked with the *actual* value found (see
-command_builder.detect_matches for exactly how conservative that
-matching is). Whatever isn't recognized -- custom flags, edited
-multi-token values, anything catalog doesn't cover -- lands in
-"Custom / Advanced" verbatim, so nothing is ever lost or misread.
+found in the profile's env_vars/prefix/suffix gets its checkbox
+pre-checked with the *actual* value found (see
+command_builder.detect_matches). Whatever isn't recognized lands in
+"Custom / Advanced" (or, for text found inside a gamescope block, a
+dedicated "Extra gamescope flags" field) verbatim, so nothing is lost.
 """
 
 import re
@@ -25,22 +35,34 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gtk  # noqa: E402
 
 from ..command_builder import (SelectedOption, build_fields, detect_matches,  # noqa: E402
-                                render_preview, steam_launch_option_line)
+                                render_preview, steam_launch_option_line,
+                                template_regex)
 from ..gtk_util import esc  # noqa: E402
 from ..models import Profile, slugify  # noqa: E402
-from ..options_catalog import CATALOG, find_option  # noqa: E402
+from ..options_catalog import (CATALOG, GAMESCOPE_BLOCK_GROUP, GAMESCOPE_CATEGORY_ID,  # noqa: E402
+                                GAMESCOPE_MASTER_ID, ChoiceField, find_option)
 
 _KEY_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
 class _OptionRow:
-    __slots__ = ("option", "check", "entry", "catalog_index")
+    __slots__ = ("option", "check", "get_value", "catalog_index", "widgets")
 
-    def __init__(self, option, check, entry, catalog_index):
+    def __init__(self, option, check, get_value, catalog_index, widgets):
         self.option = option
         self.check = check
-        self.entry = entry
+        self.get_value = get_value
         self.catalog_index = catalog_index
+        self.widgets = widgets  # non-check widgets, for sensitivity toggling
+
+
+def _parse_initial(opt, initial_value):
+    """Extract {field: value} from a matched value string using the option's template."""
+    if not initial_value or not opt.input:
+        return {}
+    regex = template_regex(opt.default, opt.input)
+    m = re.match(regex, initial_value)
+    return m.groupdict() if m else {}
 
 
 class GameEditorPage(Adw.NavigationPage):
@@ -52,23 +74,25 @@ class GameEditorPage(Adw.NavigationPage):
 
         existing = window.games_file.get_profile(profile_key) if profile_key else None
 
-        # Reverse-match the existing profile against the catalog so known
-        # options light up pre-checked with their real values.
         if existing:
-            env_matches, env_leftover = detect_matches(existing.env_vars, "env", CATALOG)
-            prefix_matches, prefix_leftover = detect_matches(existing.prefix, "prefix", CATALOG)
-            suffix_matches, suffix_leftover = detect_matches(existing.suffix, "suffix", CATALOG)
+            env_matches, env_leftover, _ = detect_matches(existing.env_vars, "env", CATALOG)
+            prefix_matches, prefix_leftover, gamescope_extra = detect_matches(
+                existing.prefix, "prefix", CATALOG)
+            suffix_matches, suffix_leftover, _ = detect_matches(existing.suffix, "suffix", CATALOG)
         else:
             env_matches, prefix_matches, suffix_matches = [], [], []
-            env_leftover = prefix_leftover = suffix_leftover = ""
+            env_leftover = prefix_leftover = suffix_leftover = gamescope_extra = ""
 
         matched_values = {oid: val for (oid, val, _idx) in
                            env_matches + prefix_matches + suffix_matches}
-        initial_prefix_order = [oid for (oid, _val, _idx)
-                                 in sorted(prefix_matches, key=lambda t: t[2])]
+        initial_prefix_order = [
+            oid for (oid, _val, _idx) in sorted(prefix_matches, key=lambda t: t[2])
+            if not (find_option(oid) and find_option(oid).group)
+        ]
 
         self.option_rows = {}
         self.prefix_order = list(initial_prefix_order)
+        self._gamescope_block_rows = []
 
         toolbar_view = Adw.ToolbarView()
         self.set_child(toolbar_view)
@@ -108,24 +132,37 @@ class GameEditorPage(Adw.NavigationPage):
 
         # --- Catalog categories -----------------------------------------
         catalog_index = 0
+        self.gamescope_extra_row = None
         for category in CATALOG:
-            group = Adw.PreferencesGroup()
+            group_widget = Adw.PreferencesGroup()
             expander = Adw.ExpanderRow(title=esc(category.title), subtitle=esc(category.subtitle))
-            group.add(expander)
+            group_widget.add(expander)
             for opt in category.options:
                 initial_value = matched_values.get(opt.id)
-                row, check, entry = self._build_option_row(
+                row, check, get_value, widgets = self._build_option_row(
                     opt, initial_value=initial_value, checked=opt.id in matched_values)
                 expander.add_row(row)
-                self.option_rows[opt.id] = _OptionRow(opt, check, entry, catalog_index)
+                option_row = _OptionRow(opt, check, get_value, catalog_index, widgets)
+                self.option_rows[opt.id] = option_row
+                if opt.group == GAMESCOPE_BLOCK_GROUP:
+                    self._gamescope_block_rows.append(option_row)
                 catalog_index += 1
-            outer.append(group)
+            if category.id == GAMESCOPE_CATEGORY_ID:
+                self.gamescope_extra_row = Adw.EntryRow(title="Extra gamescope flags (advanced)")
+                self.gamescope_extra_row.set_text(gamescope_extra)
+                self.gamescope_extra_row.connect("changed", lambda _e: self._update_preview())
+                expander.add_row(self.gamescope_extra_row)
+            outer.append(group_widget)
+
+        self._sync_gamescope_block_sensitivity()
 
         # --- Prefix ordering --------------------------------------------
         self.prefix_order_group = Adw.PreferencesGroup(
             title="Prefix order",
             description=esc("Prefix commands wrap each other left-to-right (leftmost runs "
-                             "outermost). Reorder the ones you've enabled above."),
+                             "outermost). Reorder the ones you've enabled above. Gamescope's "
+                             "own flags aren't listed here -- they're always assembled "
+                             "together right after 'gamescope' automatically."),
         )
         self.prefix_order_listbox = Gtk.ListBox(css_classes=["boxed-list"],
                                                  selection_mode=Gtk.SelectionMode.NONE)
@@ -187,12 +224,53 @@ class GameEditorPage(Adw.NavigationPage):
         check = Gtk.CheckButton(valign=Gtk.Align.CENTER, active=checked)
         row.add_prefix(check)
         row.set_activatable_widget(check)
+        widgets = []
 
-        value = initial_value if initial_value is not None else opt.default
-        entry = Gtk.Entry(text=value, valign=Gtk.Align.CENTER, sensitive=checked,
-                           width_chars=12, max_width_chars=40, hexpand=False,
-                           css_classes=["gamecmd-mono"], tooltip_text=value)
-        row.add_suffix(entry)
+        if not opt.input:
+            value = initial_value if initial_value is not None else opt.default
+            entry = Gtk.Entry(text=value, valign=Gtk.Align.CENTER, sensitive=checked,
+                               width_chars=12, max_width_chars=40, hexpand=False,
+                               css_classes=["gamecmd-mono"], tooltip_text=value)
+            entry.connect("changed", self._on_entry_changed)
+            row.add_suffix(entry)
+            widgets.append(entry)
+            get_value = entry.get_text
+
+        elif len(opt.input) == 1 and isinstance(opt.input[0], ChoiceField):
+            field = opt.input[0]
+            parsed = _parse_initial(opt, initial_value)
+            combo = Gtk.ComboBoxText(valign=Gtk.Align.CENTER, sensitive=checked)
+            for value_id, label in field.choices:
+                combo.append(value_id, label)
+            combo.set_active_id(parsed.get(field.name, field.default))
+            combo.connect("changed", lambda _c: self._update_preview())
+            row.add_suffix(combo)
+            widgets.append(combo)
+            template = opt.default
+            get_value = lambda t=template, fld=field, c=combo: t.format(
+                **{fld.name: c.get_active_id() or fld.default})
+
+        else:
+            parsed = _parse_initial(opt, initial_value)
+            spin_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
+                                valign=Gtk.Align.CENTER)
+            spins = {}
+            for nf in opt.input:
+                if len(opt.input) > 1:
+                    spin_box.append(Gtk.Label(label=esc(nf.label), css_classes=["dim-label"]))
+                start_value = int(parsed[nf.name]) if nf.name in parsed else nf.default
+                adjustment = Gtk.Adjustment(value=start_value, lower=nf.min, upper=nf.max,
+                                            step_increment=nf.step)
+                spin = Gtk.SpinButton(adjustment=adjustment, valign=Gtk.Align.CENTER,
+                                      sensitive=checked, numeric=True)
+                spin.connect("value-changed", lambda _s: self._update_preview())
+                spin_box.append(spin)
+                spins[nf.name] = spin
+                widgets.append(spin)
+            row.add_suffix(spin_box)
+            template = opt.default
+            get_value = lambda t=template, sp=spins: t.format(
+                **{name: int(s.get_value()) for name, s in sp.items()})
 
         if opt.warning:
             warn_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
@@ -200,28 +278,51 @@ class GameEditorPage(Adw.NavigationPage):
             warn_icon.add_css_class("warning")
             row.add_suffix(warn_icon)
 
-        check.connect("toggled", self._on_option_toggled, opt, entry)
-        entry.connect("changed", self._on_entry_changed)
+        check.connect("toggled", self._on_option_toggled, opt, widgets)
 
-        return row, check, entry
+        return row, check, get_value, widgets
 
     def _on_entry_changed(self, entry):
         entry.set_tooltip_text(entry.get_text())
         self._update_preview()
 
-    # -- prefix ordering -----------------------------------------------
+    # -- prefix ordering / gamescope gating -----------------------------
 
-    def _on_option_toggled(self, check, opt, entry):
-        entry.set_sensitive(check.get_active())
-        if opt.target == "prefix":
-            if check.get_active():
+    def _on_option_toggled(self, check, opt, widgets):
+        active = check.get_active()
+        if opt.group == GAMESCOPE_BLOCK_GROUP:
+            master_row = self.option_rows.get(GAMESCOPE_MASTER_ID)
+            master_active = bool(master_row and master_row.check.get_active())
+            for w in widgets:
+                w.set_sensitive(active and master_active)
+        else:
+            for w in widgets:
+                w.set_sensitive(active)
+
+        if opt.target == "prefix" and not opt.group:
+            if active:
                 if opt.id not in self.prefix_order:
                     self.prefix_order.append(opt.id)
             else:
                 if opt.id in self.prefix_order:
                     self.prefix_order.remove(opt.id)
             self._rebuild_prefix_order_box()
+
+        if opt.id == GAMESCOPE_MASTER_ID:
+            self._sync_gamescope_block_sensitivity()
+
         self._update_preview()
+
+    def _sync_gamescope_block_sensitivity(self):
+        master_row = self.option_rows.get(GAMESCOPE_MASTER_ID)
+        master_active = bool(master_row and master_row.check.get_active())
+        for option_row in self._gamescope_block_rows:
+            option_row.check.set_sensitive(master_active)
+            row_checked = option_row.check.get_active()
+            for w in option_row.widgets:
+                w.set_sensitive(master_active and row_checked)
+        if self.gamescope_extra_row is not None:
+            self.gamescope_extra_row.set_sensitive(master_active)
 
     def _rebuild_prefix_order_box(self):
         while True:
@@ -264,14 +365,15 @@ class GameEditorPage(Adw.NavigationPage):
         for option_id, row in self.option_rows.items():
             opt = row.option
             enabled = row.check.get_active()
-            value = row.entry.get_text()
-            if opt.target == "prefix":
+            value = row.get_value()
+            if opt.target == "prefix" and not opt.group:
                 order = (self.prefix_order.index(option_id)
                          if option_id in self.prefix_order else 9999)
             else:
                 order = row.catalog_index
             selected.append(SelectedOption(option_id=option_id, target=opt.target,
-                                            enabled=enabled, value=value, order=order))
+                                            enabled=enabled, value=value, order=order,
+                                            group=opt.group))
         return selected
 
     def _current_key(self) -> str:
@@ -284,6 +386,7 @@ class GameEditorPage(Adw.NavigationPage):
             custom_env=self.custom_env_row.get_text(),
             custom_prefix=self.custom_prefix_row.get_text(),
             custom_suffix=self.custom_suffix_row.get_text(),
+            gamescope_extra=self.gamescope_extra_row.get_text() if self.gamescope_extra_row else "",
         )
 
     def _update_preview(self):

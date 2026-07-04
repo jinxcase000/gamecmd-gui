@@ -2,15 +2,37 @@
 options_catalog.py
 
 A data-driven catalog of commonly used Linux/Steam gaming launch options,
-grouped into categories. Each Option becomes a checkbox + editable value in
-the Game Editor UI. Checking the box includes the (possibly edited) value
-in the profile's env_vars / prefix / suffix string.
+grouped into categories. Each Option becomes a checkbox in the Game Editor
+UI. Checking the box includes its value in the profile's env_vars /
+prefix / suffix string.
 
 target values map directly onto the three fields gamecmd's games.yaml
 supports:
     "env"    -> env_vars   (must look like KEY=VALUE)
     "prefix" -> prefix     (a command / wrapper, executed before the game)
     "suffix" -> suffix     (an argument passed after the game binary)
+
+Most options are plain flags/text (`input=()`): the box's `default` is
+either a fixed literal (a flag with nothing to configure) or a freeform
+string the user can edit directly.
+
+Some options need a *real* value rather than freeform text -- a frame
+rate, a resolution, a fixed set of named modes -- so those set `input`
+to a tuple of NumberField/ChoiceField descriptors and `default` becomes
+a str.format() template referencing each field by name, e.g.:
+
+    OptionDef(..., default="DXVK_FRAME_RATE={fps}",
+              input=(NumberField("fps", "FPS", 30, 240, 5, 60),))
+
+The Game Editor renders a Gtk.SpinButton (NumberField) or dropdown
+(ChoiceField) per entry in `input`, and resolves the final value via
+default.format(**{field_values}).
+
+`group` marks an option as belonging to a compound prefix block that
+must be assembled specially rather than just concatenated in order --
+currently only "gamescope_block" (see the gamescope category below):
+gamescope's own flags have to sit between the literal "gamescope" token
+and a closing "--", never just loose in the prefix chain.
 
 NOTE ON ACCURACY: values here reflect widely-documented, real flags/env
 vars for Proton/DXVK/Wine/gamescope/MangoHud and common engines. A few
@@ -19,7 +41,24 @@ verification per-game -- the UI surfaces those warnings rather than
 hiding the uncertainty.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class NumberField:
+    name: str      # template placeholder key, e.g. "fps"
+    label: str     # UI label, e.g. "FPS"
+    min: int
+    max: int
+    step: int = 1
+    default: int = 0
+
+
+@dataclass(frozen=True)
+class ChoiceField:
+    name: str            # template placeholder key
+    choices: tuple        # tuple of (value, display_label) pairs
+    default: str
 
 
 @dataclass(frozen=True)
@@ -27,9 +66,11 @@ class OptionDef:
     id: str
     label: str
     target: str  # "env" | "prefix" | "suffix"
-    default: str
+    default: str  # literal value, or a str.format() template if `input` is set
     description: str
     warning: str = ""
+    input: tuple = ()   # tuple[NumberField, ...] or (ChoiceField,) -- () means plain text/flag
+    group: str = ""      # "" = standalone; "gamescope_block" = part of the gamescope ... -- span
 
 
 @dataclass(frozen=True)
@@ -38,6 +79,11 @@ class CategoryDef:
     title: str
     subtitle: str
     options: tuple  # tuple[OptionDef, ...]
+
+
+GAMESCOPE_MASTER_ID = "gamescope_enable"
+GAMESCOPE_BLOCK_GROUP = "gamescope_block"
+GAMESCOPE_CATEGORY_ID = "gamescope"
 
 
 CATALOG: list[CategoryDef] = [
@@ -84,23 +130,31 @@ CATALOG: list[CategoryDef] = [
                       "Compiles shaders asynchronously to reduce traversal stutter. Small "
                       "risk of a visible shader pop-in flash the first time an effect is seen."),
             OptionDef("dxvk_hud_fps", "Show DXVK HUD", "env",
-                      "DXVK_HUD=fps",
-                      "Displays DXVK's lightweight built-in overlay. Edit the value: fps, "
-                      "frametimes, memory, devinfo, or 'full' for everything."),
+                      "DXVK_HUD={mode}",
+                      "Displays DXVK's lightweight built-in overlay.",
+                      input=(ChoiceField("mode", (
+                          ("fps", "fps"), ("frametimes", "frametimes"),
+                          ("memory", "memory"), ("devinfo", "devinfo"),
+                          ("full", "full (everything)"), ("none", "none (hide)"),
+                      ), "fps"),)),
             OptionDef("dxvk_state_cache", "Enable shader state cache", "env",
                       "DXVK_STATE_CACHE=1",
                       "Caches pipeline state to disk so shaders don't need full recompilation "
                       "on subsequent launches. On by default in modern DXVK; explicit here for clarity."),
             OptionDef("dxvk_frame_rate", "Cap frame rate", "env",
-                      "DXVK_FRAME_RATE=60",
-                      "Simple DXVK-side FPS limiter. Edit the number to your target FPS."),
+                      "DXVK_FRAME_RATE={fps}",
+                      "Simple DXVK-side FPS limiter.",
+                      input=(NumberField("fps", "FPS", 30, 240, 5, 60),)),
             OptionDef("dxvk_hdr", "Enable DXVK HDR", "env",
                       "DXVK_HDR=1",
                       "Enables DXVK's HDR swapchain support, alongside PROTON_ENABLE_HDR."),
             OptionDef("dxvk_log_level", "Silence DXVK logging", "env",
-                      "DXVK_LOG_LEVEL=none",
-                      "Suppresses DXVK's log output. Useful once a game is confirmed working "
-                      "and you don't need the log noise."),
+                      "DXVK_LOG_LEVEL={level}",
+                      "Controls how much DXVK logs to stderr.",
+                      input=(ChoiceField("level", (
+                          ("none", "none"), ("error", "error"), ("warn", "warn"),
+                          ("info", "info"), ("debug", "debug"),
+                      ), "none"),)),
         ),
     ),
 
@@ -141,12 +195,16 @@ CATALOG: list[CategoryDef] = [
                       "Upscales the game's internal (lower) render resolution to your display "
                       "resolution using FSR 1.0, entirely inside Wine/Proton -- no game-side support needed."),
             OptionDef("wine_fsr_strength", "FSR sharpening strength", "env",
-                      "WINE_FULLSCREEN_FSR_STRENGTH=2",
-                      "Sharpening strength, 0 (max sharpen) to 5 (softest). Only applies "
-                      "when Wine FSR is enabled."),
+                      "WINE_FULLSCREEN_FSR_STRENGTH={n}",
+                      "0 (max sharpen) to 5 (softest). Only applies when Wine FSR is enabled.",
+                      input=(NumberField("n", "Strength", 0, 5, 1, 2),)),
             OptionDef("wine_fsr_mode", "FSR quality mode", "env",
-                      "WINE_FULLSCREEN_FSR_MODE=performance",
-                      "Edit the value: ultra_quality, quality, balanced, or performance."),
+                      "WINE_FULLSCREEN_FSR_MODE={mode}",
+                      "Quality/performance tradeoff for Wine's built-in FSR.",
+                      input=(ChoiceField("mode", (
+                          ("ultra_quality", "Ultra Quality"), ("quality", "Quality"),
+                          ("balanced", "Balanced"), ("performance", "Performance"),
+                      ), "performance"),)),
             OptionDef("radv_fsr4", "Force FSR4 upscaling via RADV (experimental)", "env",
                       "RADV_FSR4_FP8=1 FSR4_UPGRADE=1",
                       "Uses Mesa's FP8 emulation to run FSR4's ML model on RADV. Requires an "
@@ -158,37 +216,57 @@ CATALOG: list[CategoryDef] = [
     ),
 
     CategoryDef(
-        id="gamescope",
+        id=GAMESCOPE_CATEGORY_ID,
         title="Gamescope (compositor wrapper)",
         subtitle="Resolution scaling, upscaling filters, and frame limiting",
         options=(
-            OptionDef("gamescope_basic", "Wrap game in gamescope", "prefix",
-                      "gamescope --",
-                      "Runs the game inside Valve's micro-compositor. Required for the other "
-                      "gamescope options below to have any effect. Keep this as the outermost "
-                      "(topmost) prefix entry."),
+            OptionDef(GAMESCOPE_MASTER_ID, "Wrap game in gamescope", "prefix",
+                      "gamescope",
+                      "Runs the game inside Valve's micro-compositor. Every option below "
+                      "requires this to be checked -- gamescope's own flags always have to "
+                      "sit between the literal 'gamescope' command and a closing '--' before "
+                      "the wrapped game/other prefixes, so they're assembled as one block "
+                      "automatically rather than placed loose in the prefix order."),
             OptionDef("gamescope_res", "Set output/render resolution", "prefix",
-                      "-W 2560 -H 1440 -w 1920 -h 1080",
+                      "-W {ow} -H {oh} -w {rw} -h {rh}",
                       "Output res (-W/-H, your monitor) vs. internal render res (-w/-h, what "
-                      "the game actually renders at) -- the gap between them is what gets upscaled."),
-            OptionDef("gamescope_fsr", "Upscale filter: FSR", "prefix",
-                      "-F fsr",
-                      "Use FSR 1.0 to upscale from render resolution to output resolution."),
-            OptionDef("gamescope_nis", "Upscale filter: NIS", "prefix",
-                      "-F nis",
-                      "Use NVIDIA Image Scaling instead of FSR for the upscale filter."),
+                      "the game actually renders at) -- the gap between them is what gets upscaled.",
+                      input=(
+                          NumberField("ow", "Output W", 640, 7680, 10, 2560),
+                          NumberField("oh", "Output H", 480, 4320, 10, 1440),
+                          NumberField("rw", "Render W", 640, 7680, 10, 1920),
+                          NumberField("rh", "Render H", 480, 4320, 10, 1080),
+                      ), group=GAMESCOPE_BLOCK_GROUP),
+            OptionDef("gamescope_filter", "Upscale filter", "prefix",
+                      "-F {filter}",
+                      "Which upscaler gamescope uses to go from render resolution to output "
+                      "resolution.",
+                      input=(ChoiceField("filter", (
+                          ("fsr", "FSR 1.0"), ("nis", "NVIDIA Image Scaling"),
+                      ), "fsr"),), group=GAMESCOPE_BLOCK_GROUP),
             OptionDef("gamescope_sharpness", "FSR sharpness", "prefix",
-                      "--fsr-sharpness 4",
-                      "0 = maximum sharpening, 20 = minimum. Only applies with -F fsr."),
+                      "--fsr-sharpness {n}",
+                      "0 = maximum sharpening, 20 = minimum. Only applies with the FSR filter.",
+                      input=(NumberField("n", "Sharpness", 0, 20, 1, 4),),
+                      group=GAMESCOPE_BLOCK_GROUP),
             OptionDef("gamescope_fullscreen", "Force fullscreen", "prefix",
                       "-f",
-                      "Runs gamescope's window fullscreen."),
+                      "Runs gamescope's window fullscreen.", group=GAMESCOPE_BLOCK_GROUP),
             OptionDef("gamescope_limiter", "Frame rate limit", "prefix",
-                      "-r 60",
-                      "Caps the frame rate gamescope will present at."),
+                      "-r {fps}",
+                      "Caps the frame rate gamescope will present at.",
+                      input=(NumberField("fps", "FPS", 30, 240, 5, 60),),
+                      group=GAMESCOPE_BLOCK_GROUP),
             OptionDef("gamescope_hdr", "Enable HDR output", "prefix",
                       "--hdr-enabled",
-                      "Passes through HDR to a gamescope session that supports it."),
+                      "Passes through HDR to a gamescope session that supports it.",
+                      group=GAMESCOPE_BLOCK_GROUP),
+            OptionDef("gamescope_wsi", "Enable gamescope's Vulkan WSI layer", "env",
+                      "ENABLE_GAMESCOPE_WSI=1",
+                      "Lets Vulkan games talk to gamescope's own WSI layer directly for "
+                      "correct frame pacing/latency. Recommended alongside gamescope for "
+                      "Vulkan titles; independent of the prefix block above (this is a "
+                      "plain env var, set whether or not gamescope wraps the process)."),
         ),
     ),
 
@@ -204,12 +282,13 @@ CATALOG: list[CategoryDef] = [
             OptionDef("mangohud_config", "Overlay contents / layout", "env",
                       "MANGOHUD_CONFIG=fps,frametime,cpu_stats,gpu_stats,vram,ram,position=top-left",
                       "Comma-separated MangoHud config string. Edit freely -- common fields: "
-                      "fps, frametime, cpu_stats, gpu_stats, vram, ram, temp, position=<corner>, "
-                      "font_size=<n>, background_alpha=<0-1>."),
+                      "fps, frametime, cpu_stats, gpu_stats, vram, ram, temp, position (a corner "
+                      "name), font_size (a number), background_alpha (0 to 1)."),
             OptionDef("mangohud_fps_limit", "FPS limit via MangoHud", "env",
-                      "MANGOHUD_CONFIG=fps_limit=60",
+                      "MANGOHUD_CONFIG=fps_limit={fps}",
                       "Sets a frame rate cap through MangoHud. If you also check the overlay "
-                      "contents option above, merge both into one MANGOHUD_CONFIG line by hand."),
+                      "contents option above, merge both into one MANGOHUD_CONFIG line by hand.",
+                      input=(NumberField("fps", "FPS", 0, 240, 5, 60),)),
             OptionDef("mangohud_configfile", "Use a dedicated config file", "env",
                       "MANGOHUD_CONFIGFILE=~/.config/MangoHud/thisgame.conf",
                       "Points MangoHud at a per-game config file instead of the global "
@@ -222,10 +301,15 @@ CATALOG: list[CategoryDef] = [
         title="GameMode & Performance Wrappers",
         subtitle="System-level performance helpers",
         options=(
-            OptionDef("gamemode", "Enable GameMode", "prefix",
+            OptionDef("gamemode", "Enable GameMode (prefix)", "prefix",
                       "gamemoderun",
                       "Feral Interactive's GameMode daemon: temporarily applies a performance "
                       "governor, I/O priority bump, and other tweaks while the game runs."),
+            OptionDef("gamemode_env", "Enable GameMode (env var)", "env",
+                      "GAMEMODE=1",
+                      "Alternative way to request GameMode without wrapping the command in "
+                      "gamemoderun -- some launch scripts/wrappers key off this env var "
+                      "instead. Use one or the other, not both."),
             OptionDef("game_performance", "Bazzite-style performance profile wrapper", "prefix",
                       "game-performance",
                       "Wraps the launch with a 'game-performance' script (as shipped on Bazzite "
@@ -260,9 +344,11 @@ CATALOG: list[CategoryDef] = [
                       "standalone Wine wrapper outside Proton's own compatdata handling.",
                       warning="Steam-launched Proton games already manage their own prefix; only use this for non-Proton Wine wrapper setups."),
             OptionDef("winearch", "Wine architecture", "env",
-                      "WINEARCH=win64",
-                      "Forces a 32-bit (win32) or 64-bit (win64) prefix. Only relevant for a "
-                      "prefix you're creating fresh."),
+                      "WINEARCH={arch}",
+                      "Forces a 32-bit or 64-bit prefix. Only relevant for a prefix you're "
+                      "creating fresh.",
+                      input=(ChoiceField("arch", (("win64", "64-bit"), ("win32", "32-bit")),
+                                          "win64"),)),
             OptionDef("winedebug_quiet", "Silence Wine debug channels", "env",
                       "WINEDEBUG=-all",
                       "Suppresses Wine's (often very noisy) stderr debug output."),
@@ -301,8 +387,10 @@ CATALOG: list[CategoryDef] = [
             OptionDef("ue_vulkan", "Force native Vulkan renderer", "suffix", "-vulkan",
                       "Forces native Vulkan rendering, for the (fewer) UE titles that ship a "
                       "genuine Vulkan RHI rather than relying on D3D translation."),
-            OptionDef("ue_resolution", "Set resolution", "suffix", "-ResX=1920 -ResY=1080",
-                      "Sets the startup render resolution."),
+            OptionDef("ue_resolution", "Set resolution", "suffix", "-ResX={w} -ResY={h}",
+                      "Sets the startup render resolution.",
+                      input=(NumberField("w", "Width", 640, 7680, 10, 1920),
+                             NumberField("h", "Height", 480, 4320, 10, 1080))),
             OptionDef("ue_windowed", "Force windowed mode", "suffix", "-windowed",
                       "Starts in a window instead of fullscreen."),
             OptionDef("ue_no_vsync", "Disable VSync", "suffix", "-novsync",
@@ -321,15 +409,26 @@ CATALOG: list[CategoryDef] = [
                       "Forces the D3D11 (via DXVK) rendering path."),
             OptionDef("unity_force_glcore", "Force OpenGL Core renderer", "suffix", "-force-glcore",
                       "Forces Unity's desktop OpenGL Core backend."),
-            OptionDef("unity_screen_fullscreen", "Fullscreen mode", "suffix", "-screen-fullscreen 1",
-                      "1 = fullscreen, 0 = windowed."),
+            OptionDef("unity_screen_fullscreen", "Fullscreen mode", "suffix", "-screen-fullscreen {mode}",
+                      "Whether the game starts fullscreen or windowed.",
+                      input=(ChoiceField("mode", (("1", "Fullscreen"), ("0", "Windowed")), "1"),)),
             OptionDef("unity_popup_window", "Borderless popup window", "suffix", "-popupwindow",
                       "Runs in a borderless window sized to the screen."),
             OptionDef("unity_nolog", "Disable log file", "suffix", "-nolog",
                       "Skips writing Unity's Player.log."),
             OptionDef("unity_resolution", "Set resolution", "suffix",
-                      "-screen-width 1920 -screen-height 1080",
-                      "Sets startup window/render resolution."),
+                      "-screen-width {w} -screen-height {h}",
+                      "Sets startup window/render resolution.",
+                      input=(NumberField("w", "Width", 640, 7680, 10, 1920),
+                             NumberField("h", "Height", 480, 4320, 10, 1080))),
+            OptionDef("unity_target_framerate", "Target frame rate", "suffix",
+                      "-targetFrameRate {fps}",
+                      "Not a universal Unity engine flag -- a common pattern several Unity "
+                      "titles implement in their own command-line handling to set "
+                      "Application.targetFrameRate at startup. Confirm the game actually "
+                      "reads this flag before relying on it.",
+                      warning="Game-specific convention, not guaranteed to exist in every Unity title.",
+                      input=(NumberField("fps", "FPS", 30, 240, 10, 60),)),
         ),
     ),
 
@@ -348,10 +447,13 @@ CATALOG: list[CategoryDef] = [
                       "Skips joystick/gamepad initialization (can fix startup hangs on some setups)."),
             OptionDef("src_windowed", "Windowed mode", "suffix", "-windowed",
                       "Starts in a window instead of fullscreen."),
-            OptionDef("src_resolution", "Set resolution", "suffix", "-w 1920 -h 1080",
-                      "Sets width/height."),
-            OptionDef("src_refresh", "Set refresh rate", "suffix", "-freq 144",
-                      "Requests a specific refresh rate."),
+            OptionDef("src_resolution", "Set resolution", "suffix", "-w {w} -h {h}",
+                      "Sets width/height.",
+                      input=(NumberField("w", "Width", 640, 7680, 10, 1920),
+                             NumberField("h", "Height", 480, 4320, 10, 1080))),
+            OptionDef("src_refresh", "Set refresh rate", "suffix", "-freq {hz}",
+                      "Requests a specific refresh rate.",
+                      input=(NumberField("hz", "Hz", 30, 360, 1, 144),)),
         ),
     ),
 
@@ -384,13 +486,17 @@ CATALOG: list[CategoryDef] = [
                       "Starts in fullscreen."),
             OptionDef("godot_windowed", "Windowed mode", "suffix", "--windowed",
                       "Starts in a window."),
-            OptionDef("godot_resolution", "Set resolution", "suffix", "--resolution 1920x1080",
-                      "Sets the window/render resolution."),
+            OptionDef("godot_resolution", "Set resolution", "suffix", "--resolution {w}x{h}",
+                      "Sets the window/render resolution.",
+                      input=(NumberField("w", "Width", 640, 7680, 10, 1920),
+                             NumberField("h", "Height", 480, 4320, 10, 1080))),
             OptionDef("godot_disable_vsync", "Disable VSync", "suffix", "--disable-vsync",
                       "Disables vertical sync."),
             OptionDef("godot_rendering_driver", "Rendering driver", "suffix",
-                      "--rendering-driver vulkan",
-                      "Edit the value: vulkan, opengl3, etc."),
+                      "--rendering-driver {driver}",
+                      "Which rendering backend Godot starts with.",
+                      input=(ChoiceField("driver", (("vulkan", "Vulkan"), ("opengl3", "OpenGL 3")),
+                                          "vulkan"),)),
         ),
     ),
 ]
@@ -405,4 +511,11 @@ def find_option(option_id: str) -> OptionDef | None:
         for opt in cat.options:
             if opt.id == option_id:
                 return opt
+    return None
+
+
+def find_category(category_id: str) -> CategoryDef | None:
+    for cat in CATALOG:
+        if cat.id == category_id:
+            return cat
     return None
