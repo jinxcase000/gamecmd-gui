@@ -131,6 +131,14 @@ def template_regex(template: str, input_fields: tuple) -> str:
     Turns an option's `default` (a literal, or a str.format() template when
     `input` is set) into a regex that matches that option's value wherever
     it appears in a larger string, on whitespace boundaries.
+
+    Field kinds are told apart by duck-typing rather than isinstance, so
+    this stays agnostic to the actual dataclasses in options_catalog.py:
+      - has `choices` -> ChoiceField: alternation of the fixed values
+      - has `min`     -> NumberField: digits only
+      - otherwise     -> TextField: any run of non-whitespace, so a path or
+                         connector name round-trips even when the user has
+                         edited it away from the default
     """
     field_map = {f.name: f for f in input_fields}
     pattern_parts = []
@@ -142,8 +150,10 @@ def template_regex(template: str, input_fields: tuple) -> str:
         if f is not None and hasattr(f, "choices"):
             alts = "|".join(re.escape(c[0]) for c in f.choices)
             pattern_parts.append(f"(?P<{name}>{alts})")
-        else:
+        elif f is not None and hasattr(f, "min"):
             pattern_parts.append(f"(?P<{name}>\\d+)")
+        else:
+            pattern_parts.append(f"(?P<{name}>\\S+)")
         pos = m.end()
     pattern_parts.append(re.escape(template[pos:]))
     return r"(?<!\S)" + "".join(pattern_parts) + r"(?!\S)"

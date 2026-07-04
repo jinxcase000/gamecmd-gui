@@ -18,11 +18,19 @@ string the user can edit directly.
 
 Some options need a *real* value rather than freeform text -- a frame
 rate, a resolution, a fixed set of named modes -- so those set `input`
-to a tuple of NumberField/ChoiceField descriptors and `default` becomes
-a str.format() template referencing each field by name, e.g.:
+to a tuple of NumberField/ChoiceField/TextField descriptors and
+`default` becomes a str.format() template referencing each field by
+name, e.g.:
 
     OptionDef(..., default="DXVK_FRAME_RATE={fps}",
               input=(NumberField("fps", "FPS", 30, 240, 5, 60),))
+
+TextField is for a single arbitrary-text value (a path, a display
+connector name) that still needs to round-trip through an existing
+profile correctly when edited -- unlike a plain `input=()` freeform
+option (matched only by exact literal text), a TextField's value is
+captured by a whitespace-delimited regex and always lands back in its
+own entry box on reopen, however it was edited.
 
 The Game Editor renders a Gtk.SpinButton (NumberField) or dropdown
 (ChoiceField) per entry in `input`, and resolves the final value via
@@ -66,6 +74,13 @@ class ChoiceField:
     name: str            # template placeholder key
     choices: tuple        # tuple of (value, display_label) pairs
     default: str
+
+
+@dataclass(frozen=True)
+class TextField:
+    name: str      # template placeholder key
+    label: str     # UI label
+    default: str   # placeholder/default text (a path, connector name, etc.)
 
 
 @dataclass(frozen=True)
@@ -139,6 +154,16 @@ CATALOG: list[CategoryDef] = [
                       "PROTON_NO_STEAMINPUT=1",
                       "Troubleshooting companion for native Wayland: fixes Steam Input acting "
                       "up with a controller under PROTON_ENABLE_WAYLAND."),
+            OptionDef("proton_use_ntsync", "Use NTSYNC (kernel-native sync primitive)", "env",
+                      "PROTON_USE_NTSYNC=1",
+                      "Switches to the in-kernel ntsync driver for NT synchronization "
+                      "primitives instead of esync/fsync -- generally the lowest-overhead "
+                      "option of the three where it's available, and can noticeably reduce "
+                      "stutter in sync-heavy titles. Needs a Linux kernel with the ntsync "
+                      "driver (mainline since 6.14 -- check that /dev/ntsync exists) and a "
+                      "Proton build with ntsync support (GE-Proton 10-9+, Proton-CachyOS, or "
+                      "Proton Experimental/11+); vanilla stable Proton may not have it yet.",
+                      warning="Requires kernel 6.14+ with /dev/ntsync present, and a Proton build with ntsync support (GE-Proton 10-9+, Proton-CachyOS, or a recent Experimental/11+ build) -- check both before relying on it."),
         ),
     ),
 
@@ -374,14 +399,11 @@ CATALOG: list[CategoryDef] = [
                       "Starts gamescope's window borderless instead of with decorations.",
                       group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_output_display", "Preferred output display", "prefix",
-                      "-O DP-1",
+                      "-O {display}",
                       "Pins gamescope to a specific display connector on a multi-monitor "
                       "setup -- edit the value to your connector's name (check `xrandr` or "
-                      "`wlr-randr` for the exact name, e.g. DP-1, HDMI-A-1). Note: if you "
-                      "edit this and reopen the profile later, it'll show up under 'Extra "
-                      "gamescope flags' instead of pre-checked here -- it still works "
-                      "exactly the same either way, this box just won't re-detect a "
-                      "customized value.",
+                      "`wlr-randr` for the exact name, e.g. DP-1, HDMI-A-1).",
+                      input=(TextField("display", "Display", "DP-1"),),
                       group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_adaptive_sync", "Adaptive sync (VRR)", "prefix",
                       "--adaptive-sync",
@@ -401,16 +423,15 @@ CATALOG: list[CategoryDef] = [
                       "cursor misbehaves on focus changes.",
                       group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_reshade_effect", "ReShade effect file", "prefix",
-                      "--reshade-effect ~/.local/share/gamescope/reshade/Shaders/example.fx",
+                      "--reshade-effect {path}",
                       "Loads a ReShade shader (CRT shader, film grain, HDR debug histogram, "
                       "etc.) applied on top of the final composited image. Effects are "
                       "loaded from ~/.local/share/gamescope/reshade/Shaders/ or "
                       "/usr/share/gamescope/reshade/Shaders/ -- edit the path to match your "
                       "effect file. Adds some latency since it runs on the general gfx/"
-                      "compute queue rather than the async compute path. Note: like the "
-                      "output display option above, an edited path re-detects into 'Extra "
-                      "gamescope flags' rather than pre-checking this box on reopen -- still "
-                      "fully functional, just shown differently.",
+                      "compute queue rather than the async compute path.",
+                      input=(TextField("path", "Path",
+                                        "~/.local/share/gamescope/reshade/Shaders/example.fx"),),
                       group=GAMESCOPE_BLOCK_GROUP, requires=GAMESCOPE_MASTER_ID),
             OptionDef("gamescope_reshade_technique_idx", "ReShade technique index", "prefix",
                       "--reshade-technique-idx {idx}",
@@ -538,6 +559,14 @@ CATALOG: list[CategoryDef] = [
             OptionDef("wine_large_address_aware", "Large address aware", "env",
                       "WINE_LARGE_ADDRESS_AWARE=1",
                       "Standalone-Wine equivalent of Proton's large-address-aware override."),
+            OptionDef("wine_disable_ntsync", "Disable NTSYNC", "env",
+                      "WINE_DISABLE_FAST_SYNC=1",
+                      "A standalone Wine build with ntsync support uses it automatically "
+                      "whenever /dev/ntsync exists -- there's no separate 'enable' flag to "
+                      "set for Wine the way Proton needs PROTON_USE_NTSYNC (see the Proton "
+                      "category). This is the opt-out switch, for troubleshooting a game "
+                      "that regresses under ntsync.",
+                      warning="Only meaningful on a standalone Wine build with ntsync support and a 6.14+ kernel -- otherwise this is a no-op since there's nothing to disable."),
         ),
     ),
 

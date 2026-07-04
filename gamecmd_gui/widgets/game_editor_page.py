@@ -43,7 +43,7 @@ from ..command_builder import (SelectedOption, build_fields, detect_matches,  # 
 from ..gtk_util import esc  # noqa: E402
 from ..models import Profile, slugify  # noqa: E402
 from ..options_catalog import (CATALOG, GAMESCOPE_CATEGORY_ID, GAMESCOPE_MASTER_ID,  # noqa: E402
-                                ChoiceField, find_option)
+                                ChoiceField, TextField, find_option)
 
 _KEY_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
@@ -286,6 +286,20 @@ class GameEditorPage(Adw.NavigationPage):
             template = opt.default
             get_value = lambda t=template, fld=field, c=combo: t.format(
                 **{fld.name: c.get_active_id() or fld.default})
+
+        elif len(opt.input) == 1 and isinstance(opt.input[0], TextField):
+            field = opt.input[0]
+            parsed = _parse_initial(opt, initial_value)
+            start_text = parsed.get(field.name, field.default)
+            entry = Gtk.Entry(text=start_text, valign=Gtk.Align.CENTER, sensitive=checked,
+                               width_chars=12, max_width_chars=40, hexpand=False,
+                               css_classes=["gamecmd-mono"], tooltip_text=start_text)
+            entry.connect("changed", self._on_entry_changed)
+            row.add_suffix(entry)
+            widgets.append(entry)
+            template = opt.default
+            get_value = lambda t=template, fld=field, e=entry: t.format(
+                **{fld.name: e.get_text() or fld.default})
 
         else:
             # Keep this compact no matter how many fields: a wide, unbounded
