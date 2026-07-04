@@ -288,8 +288,15 @@ class GameEditorPage(Adw.NavigationPage):
                 **{fld.name: c.get_active_id() or fld.default})
 
         else:
+            # Keep this compact no matter how many fields: a wide, unbounded
+            # suffix box here can force the row's title/subtitle column down
+            # to near-zero width, which makes GTK wrap that text into a
+            # single vertical column of one letter per line. Each spin
+            # button gets a small fixed width_chars regardless of its max
+            # value, and multi-field labels are single letters (the row's
+            # own description already spells out what each one means).
             parsed = _parse_initial(opt, initial_value)
-            spin_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
+            spin_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
                                 valign=Gtk.Align.CENTER)
             spins = {}
             for nf in opt.input:
@@ -299,7 +306,8 @@ class GameEditorPage(Adw.NavigationPage):
                 adjustment = Gtk.Adjustment(value=start_value, lower=nf.min, upper=nf.max,
                                             step_increment=nf.step)
                 spin = Gtk.SpinButton(adjustment=adjustment, valign=Gtk.Align.CENTER,
-                                      sensitive=checked, numeric=True)
+                                      sensitive=checked, numeric=True,
+                                      width_chars=5, max_width_chars=5, hexpand=False)
                 spin.connect("value-changed", lambda _s: self._update_preview())
                 spin_box.append(spin)
                 spins[nf.name] = spin
