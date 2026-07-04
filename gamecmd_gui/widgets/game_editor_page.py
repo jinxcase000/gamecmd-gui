@@ -228,16 +228,26 @@ class GameEditorPage(Adw.NavigationPage):
         self.steam_line_row.add_suffix(copy_launch_btn)
         preview_group.add(self.steam_line_row)
 
-        preview_frame = Gtk.Frame(margin_top=6)
-        preview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
-                               margin_top=10, margin_bottom=10, margin_start=10, margin_end=10)
-        self.preview_label = Gtk.Label(css_classes=["gamecmd-mono"], selectable=True,
-                                        wrap=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
-                                        max_width_chars=1, xalign=0,
-                                        justify=Gtk.Justification.LEFT)
-        preview_box.append(self.preview_label)
-        preview_frame.set_child(preview_box)
-        preview_group.add(preview_frame)
+        # A Gtk.Label here (even with wrap + max_width_chars tricks) can end
+        # up asking for its full unwrapped width depending on GTK version,
+        # which then drags the whole window wider as the resolved command
+        # gets longer. A fixed-height, non-horizontally-scrolling TextView
+        # doesn't have that failure mode at all: it always wraps to
+        # whatever width it's given and never grows the window.
+        preview_scroller = Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            has_frame=True, margin_top=6,
+        )
+        preview_scroller.set_size_request(-1, 110)  # roughly 4-5 lines
+        self.preview_view = Gtk.TextView(
+            editable=False, cursor_visible=False, monospace=True,
+            wrap_mode=Gtk.WrapMode.WORD_CHAR, hexpand=True,
+            left_margin=10, right_margin=10, top_margin=10, bottom_margin=10,
+        )
+        self.preview_buffer = self.preview_view.get_buffer()
+        preview_scroller.set_child(self.preview_view)
+        preview_group.add(preview_scroller)
 
         outer.append(preview_group)
 
@@ -428,7 +438,7 @@ class GameEditorPage(Adw.NavigationPage):
         self.steam_line_label.set_label(steam_launch_option_line(key))
         preview = render_preview(env_vars, prefix, suffix,
                                   game_cmd="/path/to/game_binary")
-        self.preview_label.set_label(preview)
+        self.preview_buffer.set_text(preview)
 
     def _on_copy_launch_line(self, _button):
         clipboard = Gdk.Display.get_default().get_clipboard()
